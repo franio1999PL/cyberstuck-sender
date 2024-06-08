@@ -1,3 +1,4 @@
+import { PrismaClient } from '@prisma/client';
 import cors from 'cors';
 import express, { NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
@@ -12,6 +13,8 @@ app.use(morgan('dev'));
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
+
+const prisma = new PrismaClient();
 
 const accessKey = process.env.API_KEY;
 
@@ -38,9 +41,30 @@ app.get('/', checkApiKey, (req: Request, res: Response) => {
 // Użycie middleware do sprawdzania apiKey
 app.post('/send', checkApiKey, async (req: Request, res: Response) => {
   const { email, subject, text } = req.body;
+  const IP = req.ip;
 
   const response = await sendMail(email, subject, text);
+  await prisma.message.create({
+    data: {
+      emailTo: String(email),
+      subject: String(subject),
+      text: String(text),
+      ip: String(IP),
+    },
+  });
   res.json(response);
+});
+
+// Get all messages with pagination
+app.get('/messages', async (req: Request, res: Response) => {
+  const { page = 1, limit = 10 } = req.query;
+
+  const messages = await prisma.message.findMany({
+    skip: Number(page) - 1,
+    take: Number(limit),
+  });
+
+  res.json(messages);
 });
 
 // 404 handler
