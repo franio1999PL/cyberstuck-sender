@@ -3,6 +3,7 @@ import cors from 'cors';
 import express, { NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { sendMail } from './mail/send';
 import { comparePasswords, hashPassword } from './utils';
@@ -11,10 +12,15 @@ require('dotenv').config();
 
 const app = express();
 
+app.set('view engine', 'ejs');
+
 app.use(morgan('dev'));
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
+app.use(express.static('public'));
+app.set('views', path.join(__dirname, 'views'));
+app.use(express.urlencoded({ extended: true }));
 
 const prisma = new PrismaClient();
 
@@ -54,10 +60,7 @@ const checkApiKey = async (req: Request, res: Response, next: NextFunction) => {
 };
 
 app.get('/', (req: Request, res: Response) => {
-  res.json({
-    appName: 'Cyber Stack',
-    version: '1.0.0',
-  });
+  res.redirect('/create/token');
 });
 
 // Użycie middleware do sprawdzania apiKey
@@ -83,92 +86,95 @@ app.post('/send', checkApiKey, async (req: Request, res: Response) => {
   res.json(response);
 });
 
-app.post('/register', async (req: Request, res: Response) => {
-  const { email, password } = req.body;
+app.get('/register', (req: Request, res: Response) => {
+  res.render('register', { title: 'Rejestracja', message: null });
+});
 
-  if (!email || !password) {
-    return res.status(400).json({
-      message: 'Bad request',
+app.post('/register', async (req: Request, res: Response) => {
+  const { email, password, confirmPassword } = req.body;
+
+  if (!email || !password || !confirmPassword) {
+    return res.status(400).render('register', {
+      title: 'Rejestracja',
+      message: 'Błędny email lub hasło',
     });
   }
 
-  // adres email need to be a unique and valid email address in domain cyberfolks.pl
+  if (password !== confirmPassword) {
+    return res.status(400).render('register', {
+      title: 'Rejestracja',
+      message: 'Hasła nie są takie same',
+    });
+  }
 
   if (!email.includes('@') || !email.includes('.')) {
-    return res.status(400).json({
+    return res.status(400).render('register', {
+      title: 'Rejestracja',
       message: 'Błędny format adresu email',
     });
   }
   if (email !== 'sikorafranek@gmail.com') {
     if (!email.includes('@cyberfolks.pl')) {
-      return res.status(400).json({
-        message: 'Nie odpowiedni domena emaila',
+      return res.status(400).render('register', {
+        title: 'Rejestracja',
+        message: 'Nie odpowiednia domena emaila',
       });
     }
   }
 
-  // check user exists
-
-  const userExists = await prisma.user
-    .findUnique({
+  try {
+    const userExists = await prisma.user.findUnique({
       where: {
         email: String(email),
       },
-    })
-    .catch((error) => {
-      console.error(error);
-      return null;
-    })
-    .finally(async () => {
-      await prisma.$disconnect();
     });
 
-  if (userExists) {
-    return res.status(409).json({
-      message: 'Taki użytkownik już istnieje w bazie danych',
-    });
-  }
+    if (userExists) {
+      return res.status(409).render('register', {
+        title: 'Rejestracja',
+        message: 'Taki użytkownik już istnieje w bazie danych',
+      });
+    }
 
-  // encrypt password
+    const HPassword = await hashPassword(password);
 
-  const HPassword = await hashPassword(password);
-
-  const createdUser = await prisma.user
-    .create({
+    const createdUser = await prisma.user.create({
       data: {
         id: uuidv4(),
         email: String(email),
         password: String(HPassword),
         role: 'GUEST',
       },
-    })
-    .catch((error) => {
-      console.error(error);
-    })
-    .finally(async () => {
-      await prisma.$disconnect();
     });
 
-  if (!createdUser) {
-    return res.status(500).json({
-      message: 'Błąd podczas tworzenia użytkownika',
+    if (!createdUser) {
+      return res.status(500).render('register', {
+        title: 'Rejestracja',
+        message: 'Błąd podczas tworzenia użytkownika',
+      });
+    }
+
+    const activateMessage = await sendMail(
+      email,
+      'Aktywacja konta',
+      `https://${process.env.APP_URL}/user/activate/${String(
+        createdUser.id,
+      )}?email=${createdUser.email}`,
+    );
+
+    console.log(activateMessage);
+
+    return res.render('register', {
+      title: 'Rejestracja',
+      message:
+        'Użytkownik został utworzony. Aktywuj konto klikając w link wysłany na email',
     });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).send('Błąd wewnętrzny serwera');
+  } finally {
+    await prisma.$disconnect();
   }
-
-  const activateMessage = await sendMail(
-    email,
-    'Aktywacja konta',
-    `https://${APP_URL}/user/activate/${String(createdUser.id)}?email=${
-      createdUser.email
-    }`,
-  );
-
-  console.log(activateMessage);
-
-  res.json({
-    message:
-      'Użytkownik został utworzony. Aktywuj konto klikając w link wysłany na email',
-  });
 });
 
 app.get('/user/activate/:id', async (req: Request, res: Response) => {
@@ -234,16 +240,28 @@ app.get('/user/activate/:id', async (req: Request, res: Response) => {
   res
     .status(200)
     .send(
-      'Konto zostało aktywowane. Możesz utowrzyć token API aby wysyłać maile.',
+      'Konto zostało aktywowane. Możesz utworzyć token API aby wysyłać maile.',
     );
+});
+
+app.get('/create/token', (req: Request, res: Response) => {
+  return res.status(401).render('create', {
+    title: 'Utwórz token',
+    login: true,
+    message: '',
+    token: null,
+  });
 });
 
 app.post('/create/token', async (req: Request, res: Response) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
-    return res.status(400).json({
-      message: 'Błędny email lub hasło',
+    return res.status(400).render('create', {
+      title: 'Utwórz token',
+      login: false,
+      message: 'Nie podano adresu email lub hasła. Spróbuj ponownie.',
+      token: null,
     });
   }
 
@@ -262,8 +280,12 @@ app.post('/create/token', async (req: Request, res: Response) => {
     });
 
   if (!user) {
-    return res.status(404).json({
-      message: 'Nie znaleziono użytkownika o podanym adresie email',
+    return res.status(404).render('create', {
+      title: 'Utwórz token',
+      login: false,
+      message:
+        'Nie znaleziono użytkownika o podanym adresie email. Spróbuj ponownie.',
+      token: null,
     });
   }
 
@@ -272,8 +294,12 @@ app.post('/create/token', async (req: Request, res: Response) => {
   const match = await comparePasswords(password, user.password);
 
   if (!match) {
-    return res.status(401).json({
-      message: 'Podałeś złe hasło',
+    return res.status(401).render('create', {
+      title: 'Utwórz token',
+      login: false,
+      message:
+        'Token o nazwie cf został już utworzony. Możesz go użyć do wysyłania maili.',
+      token: null,
     });
   }
 
@@ -292,7 +318,11 @@ app.post('/create/token', async (req: Request, res: Response) => {
     });
 
   if (token) {
-    return res.json({
+    return res.status(201).render('create', {
+      title: 'Utwórz token',
+      login: false,
+      message:
+        'Token o nazwie cf został już utworzony. Możesz go użyć do wysyłania maili.',
       token: token.token,
     });
   }
@@ -318,12 +348,14 @@ app.post('/create/token', async (req: Request, res: Response) => {
     });
 
   if (!createToken) {
-    return res.status(500).json({
-      message: 'Wystąpił błąd podczas tworzenia tokenu',
-    });
+    return res.status(500).send('Wystąpił błąd podczas tworzenia tokenu');
   }
 
-  res.json({
+  return res.status(201).render('create', {
+    title: 'Utwórz token',
+    login: false,
+    message:
+      'Token o nazwie cf został już utworzony. Możesz go użyć do wysyłania maili.',
     token: createToken.token,
   });
 });
