@@ -14,11 +14,33 @@ datasource db {
 }
 
 model Message {
-  id Int @id @default(dbgenerated("uuid()"))
+  id String @id
   emailTo String
   subject String
   text String
-  ip String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model User {
+  id String @id
+  email String @unique
+  password String
+  role Role @default(GUEST)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Token {
+  id String @id
+  userId String @unique
+  token String @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum Role {
+  ADMIN
+  USER
+  GUEST
 }
